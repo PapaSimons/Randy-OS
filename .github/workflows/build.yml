@@ -1,0 +1,70 @@
+name: Build Alpha 1 image
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      ssh_public_key:
+        description: 'Optional single-line SSH public key for root Alpha access (never a private key)'
+        required: false
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    env:
+      MKOSI_VERSION: '27.1'
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Linux build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y python3-venv apt debian-archive-keyring \
+            bubblewrap systemd-container systemd-repart uidmap \
+            util-linux fdisk e2fsprogs dosfstools xz-utils zstd curl gpg
+          # Noble's Debian keyring can predate the Trixie signing keys.
+          for key in archive-key-13 archive-key-13-security release-13; do
+            curl --fail --silent --show-error --location --retry 3 \
+              "https://ftp-master.debian.org/keys/${key}.asc" -o "/tmp/${key}.asc"
+            gpg --batch --dearmor < "/tmp/${key}.asc" | sudo tee -a /usr/share/keyrings/debian-archive-keyring.gpg > /dev/null
+          done
+          python3 -m venv /tmp/mkosi-venv
+          /tmp/mkosi-venv/bin/pip install "mkosi[bootable] @ https://github.com/systemd/mkosi/archive/refs/tags/v${MKOSI_VERSION}.tar.gz"
+          /tmp/mkosi-venv/bin/mkosi --version
+      - name: Prepare optional Alpha public key overlay
+        env:
+          SSH_PUBLIC_KEY: ${{ inputs.ssh_public_key }}
+        run: |
+          if [ -n "$SSH_PUBLIC_KEY" ]; then
+            install -d -m 700 .alpha-ssh/root/.ssh
+            printf '%s\n' "$SSH_PUBLIC_KEY" > .alpha-ssh/root/.ssh/authorized_keys
+            ssh-keygen -l -f .alpha-ssh/root/.ssh/authorized_keys
+            chmod 600 .alpha-ssh/root/.ssh/authorized_keys
+            printf '[Content]\nExtraTrees=.alpha-ssh\n' > mkosi.local.conf
+          fi
+      - name: Build raw disk image
+        run: |
+          sudo /tmp/mkosi-venv/bin/mkosi summary
+          sudo /tmp/mkosi-venv/bin/mkosi build
+      - name: Inspect image
+        run: sudo scripts/validate-image.sh mkosi.output/randy-os-alpha1-x86_64.raw
+      - name: Compress image and checksum
+        working-directory: mkosi.output
+        run: |
+          sudo chown -R "$(id -u):$(id -g)" .
+          xz -T2 -6 randy-os-alpha1-x86_64.raw
+          sha256sum randy-os-alpha1-x86_64.raw.xz > SHA256SUMS
+      - uses: actions/upload-artifact@v4
+        with:
+          name: randy-os-alpha1-x86_64
+          compression-level: 0
+          if-no-files-found: error
+          path: |
+            mkosi.output/randy-os-alpha1-x86_64.raw.xz
+            mkosi.output/SHA256SUMS
+            mkosi.output/*.manifest

@@ -1,0 +1,12 @@
+/mkosi.output/
+/mkosi.cache/
+/mkosi.builddir/
+/mkosi.workspace/
+/mkosi.tools/
+/mkosi.local.conf
+/mkosi.local/
+/mkosi.rootpw
+/mkosi.key
+/mkosi.crt
+/mkosi.secure-boot.*
+/.alpha-ssh/

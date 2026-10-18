@@ -1,0 +1,8 @@
+enable NetworkManager.service
+enable avahi-daemon.service
+enable ssh.service
+disable ssh.socket
+enable systemd-timesyncd.service
+disable systemd-networkd.service
+disable systemd-networkd.socket
+disable systemd-networkd-wait-online.service
