@@ -180,6 +180,29 @@ class LayoutTests(unittest.TestCase):
         self.assertNotIn('MountPoint', config)
         self.assertFalse(list((ROOT / 'mkosi.extra').rglob('randy-wifi.txt')))
 
+    def test_esp_copies_both_kernel_payload_and_bootloader(self):
+        # Repart CopyFiles is repeatable: ConfigParser would lose one directive.
+        # mkosi v27.1 stages the UKI at /boot/EFI/Linux, the loader under /efi.
+        lines = (ROOT / 'mkosi.repart/00-esp.conf').read_text().splitlines()
+        copies = [line.split('=', 1)[1].strip() for line in lines
+                  if line.strip().startswith('CopyFiles=')]
+        self.assertIn('/boot:/', copies, 'UKIs must be copied to the ESP root')
+        self.assertIn('/efi:/', copies, 'systemd-boot must be copied to the ESP root')
+        self.assertLess(copies.index('/boot:/'), copies.index('/efi:/'))
+
+    def test_unsigned_uki_generation_is_required(self):
+        config = ini(ROOT / 'mkosi.conf')
+        self.assertEqual(config['Content']['Bootable'], 'yes')
+        self.assertEqual(config['Content']['Bootloader'], 'systemd-boot')
+        self.assertEqual(config['Content']['UnifiedKernelImages'], 'unsigned')
+        self.assertEqual(config['Validation']['SecureBoot'], 'no')
+        packages = config['Content']['Packages'].split()
+        self.assertIn('linux-image-amd64', packages)
+        self.assertIn('systemd-boot-efi', packages)
+        self.assertEqual(config['Build']['ToolsTree'], 'yes')
+        self.assertEqual(config['Build']['ToolsTreeDistribution'], 'debian')
+        self.assertEqual(config['Build']['ToolsTreeRelease'], 'trixie')
+
     def test_optional_mount_and_service(self):
         base = ROOT / 'mkosi.extra/etc/systemd/system'
         service = ini(base / 'randy-wifi-import.service')
