@@ -1,0 +1,21 @@
+[Unit]
+Description=Import optional Randy Wi-Fi provisioning file
+Wants=NetworkManager.service run-randy\x2dconfig.mount
+After=NetworkManager.service run-randy\x2dconfig.mount
+ConditionPathIsMountPoint=/run/randy-config
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/python3 /usr/lib/randy/wifi-import.py
+TimeoutStartSec=90s
+Restart=no
+RemainAfterExit=yes
+UMask=0077
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+ReadWritePaths=/etc/NetworkManager/system-connections /run/randy-config
+
+[Install]
+WantedBy=multi-user.target

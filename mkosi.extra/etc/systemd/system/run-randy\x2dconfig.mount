@@ -1,0 +1,11 @@
+[Unit]
+Description=Optional Randy CONFIG partition
+# Includes time waiting for a missing label/device, not just mount(8).
+JobTimeoutSec=10s
+
+[Mount]
+What=/dev/disk/by-label/CONFIG
+Where=/run/randy-config
+Type=vfat
+Options=rw,nosuid,nodev,noexec,uid=0,gid=0,umask=0077
+TimeoutSec=5s
