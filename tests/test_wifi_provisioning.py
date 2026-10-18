@@ -175,7 +175,7 @@ class LayoutTests(unittest.TestCase):
         self.assertEqual(config['Format'], 'vfat')
         self.assertEqual(config['SizeMinBytes'], '64M')
         self.assertEqual(config['SizeMaxBytes'], '64M')
-        self.assertEqual(config['Type'], 'microsoft-basic-data')
+        self.assertEqual(config['Type'], 'ebd0a0a2-b9e5-4433-87c0-68b6b72699c7')
         self.assertNotIn('CopyFiles', config)
         self.assertNotIn('MountPoint', config)
         self.assertFalse(list((ROOT / 'mkosi.extra').rglob('randy-wifi.txt')))
