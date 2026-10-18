@@ -56,8 +56,19 @@ jobs:
         run: |
           sudo /tmp/mkosi-venv/bin/mkosi summary
           sudo /tmp/mkosi-venv/bin/mkosi build
-      - name: Inspect image
-        run: sudo scripts/validate-image.sh mkosi.output/randy-os-alpha1-x86_64.raw
+      - name: Inspect image with diagnostics
+        id: validate
+        shell: bash
+        run: |
+          set -o pipefail
+          sudo scripts/validate-image.sh mkosi.output/randy-os-alpha1-x86_64.raw 2>&1 | tee image-validation.log
+      - name: Upload image validation log
+        if: ${{ always() && (steps.validate.outcome == 'success' || steps.validate.outcome == 'failure') }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: randy-os-alpha1-validation-log
+          path: image-validation.log
+          if-no-files-found: error
       - name: Compress image and checksum
         working-directory: mkosi.output
         run: |
