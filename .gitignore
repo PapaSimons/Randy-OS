@@ -10,3 +10,7 @@
 /mkosi.crt
 /mkosi.secure-boot.*
 /.alpha-ssh/
+
+__pycache__/
+*.pyc
+randy-wifi.txt

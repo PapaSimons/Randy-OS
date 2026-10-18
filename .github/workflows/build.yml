@@ -26,7 +26,7 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y python3-venv apt debian-archive-keyring \
             bubblewrap systemd-container systemd-repart uidmap \
-            util-linux fdisk e2fsprogs dosfstools xz-utils zstd curl gpg
+            util-linux fdisk e2fsprogs dosfstools xz-utils zstd curl gpg python3-gi gir1.2-nm-1.0
           # Noble's Debian keyring can predate the Trixie signing keys.
           for key in archive-key-13 archive-key-13-security release-13; do
             curl --fail --silent --show-error --location --retry 3 \
@@ -36,6 +36,11 @@ jobs:
           python3 -m venv /tmp/mkosi-venv
           /tmp/mkosi-venv/bin/pip install "mkosi[bootable] @ https://github.com/systemd/mkosi/archive/refs/tags/v${MKOSI_VERSION}.tar.gz"
           /tmp/mkosi-venv/bin/mkosi --version
+      - name: Run provisioning checks including NetworkManager keyfile compatibility
+        run: |
+          bash -n scripts/configure-wifi-macos.sh scripts/validate-image.sh
+          /usr/bin/python3 -c 'import gi; gi.require_version("NM", "1.0"); from gi.repository import NM'
+          /usr/bin/python3 -m unittest discover -s tests -v
       - name: Prepare optional Alpha public key overlay
         env:
           SSH_PUBLIC_KEY: ${{ inputs.ssh_public_key }}

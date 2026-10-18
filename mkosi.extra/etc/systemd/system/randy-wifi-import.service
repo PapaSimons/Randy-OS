@@ -6,8 +6,9 @@ ConditionPathIsMountPoint=/run/randy-config
 
 [Service]
 Type=oneshot
+User=root
 ExecStart=/usr/bin/python3 /usr/lib/randy/wifi-import.py
-TimeoutStartSec=90s
+TimeoutStartSec=120s
 Restart=no
 RemainAfterExit=yes
 UMask=0077
