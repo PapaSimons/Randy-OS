@@ -305,6 +305,29 @@ a captive setup portal. Alpha 1 does not attempt secure erasure.
 
 ## Wi-Fi troubleshooting
 
+After each boot/provisioning attempt, open **CONFIG/randy-diagnostics.txt** on
+your Mac/PC. The report is written on both success and failure and overwritten
+on the next boot. It includes the requested SSID, parse/profile/activation
+results, service/radio/device state, numeric NetworkManager device reason codes,
+IP addresses/routes, PCI network and USB vendor/product IDs, bound Wi-Fi drivers,
+rfkill blocks and categorized firmware events. It contains no password, derived
+PSK, profile contents, SSH keys, tokens or raw journal/kernel/command output.
+NetworkManager errors use fixed categories; firmware events use fixed summaries
+and numeric error codes. Other visible SSIDs and USB serials are not written.
+
+Reports are checkpointed before activation, followed by a bounded status snapshot.
+An ExecStopPost helper appends systemd's actual result on failure/timeout (or when
+the successful oneshot is later stopped). A missing/unwritable CONFIG cannot
+receive a report. Diagnostic collection has an eight-second command budget and
+does not change credentials, force scans or add connection attempts. SSID
+visibility reflects NetworkManager's cached scan: `no` is an observation, not
+proof that a hidden/recently started network is unreachable. Firmware details
+may be unavailable if kernel log access is restricted.
+
+Successful provisioning still deletes `randy-wifi.txt`; the diagnostic report
+remains for Alpha testing. Failed provisioning retains the input file. No console
+password or additional package is introduced by this diagnostic mechanism.
+
 - **Wrong SSID/password:** power down and reconnect the drive to your Mac/PC.
   The failed `randy-wifi.txt` remains on CONFIG. Correct the literal values,
   safely eject and reboot. Check the network uses WPA/WPA2-Personal, and that

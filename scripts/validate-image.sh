@@ -266,6 +266,7 @@ main() {
     run 'Default target link metadata (expected /usr/lib/systemd/system/multi-user.target)' ls -ld "$root/etc/systemd/system/default.target"
     capture 'Read configured default-target link' readlink "$root/etc/systemd/system/default.target"
     equal 'default target link' /usr/lib/systemd/system/multi-user.target "$command_output"
+    check_file 'Wi-Fi diagnostic helper is installed' "$root/usr/lib/randy/wifi_diagnostics.py" -f
     check_file 'Wi-Fi importer is installed' "$root/usr/lib/randy/wifi-import.py" -f
     check_file 'Wi-Fi import service is installed' "$root/etc/systemd/system/randy-wifi-import.service" -f
     check_file 'Optional CONFIG mount unit is installed' "$root/etc/systemd/system/"'run-randy\x2dconfig.mount' -f

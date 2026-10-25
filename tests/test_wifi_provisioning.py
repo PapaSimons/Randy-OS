@@ -4,6 +4,8 @@ import contextlib
 import hashlib
 import importlib.util
 import io
+import json
+import types
 import os
 from pathlib import Path
 import secrets
@@ -17,6 +19,7 @@ from unittest import mock
 # Importing the installed script must not create bytecode in mkosi.extra.
 sys.dont_write_bytecode = True
 ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT / 'mkosi.extra/usr/lib/randy'))
 SPEC = importlib.util.spec_from_file_location('wifi_import', ROOT / 'mkosi.extra/usr/lib/randy/wifi-import.py')
 wifi = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(wifi)
@@ -76,6 +79,7 @@ class ImportTests(unittest.TestCase):
         self.source.write_bytes(self.data)
         self.calls = []
         self.available = mock.patch.object(wifi, 'wifi_available', return_value=True).start()
+        mock.patch('wifi_diagnostics.probe', return_value=(127, '')).start()
         self.addCleanup(mock.patch.stopall)
 
     def run_import(self, reject=None, change_source=False):
@@ -166,6 +170,174 @@ class ImportTests(unittest.TestCase):
         self.assertEqual(sleep.call_count, 15)
 
 
+class DiagnosticTests(unittest.TestCase):
+    def setUp(self):
+        self.work = tempfile.TemporaryDirectory()
+        self.addCleanup(self.work.cleanup)
+        self.source = Path(self.work.name) / 'randy-wifi.txt'
+        self.connections = Path(self.work.name) / 'connections'
+        self.password = secrets.token_urlsafe(20)
+        self.ssid = 'TEST_ONLY = ;'
+        self.psk = hashlib.pbkdf2_hmac('sha1', self.password.encode(), self.ssid.encode(), 4096, 32).hex()
+        self.source.write_text(f'SSID={self.ssid}\nPASSWORD={self.password}\n')
+        self.diag = sys.modules['wifi_diagnostics']
+        mock.patch.object(wifi, 'wifi_available', return_value=True).start()
+        mock.patch.object(self.diag, 'probe', return_value=(127, '')).start()
+        mock.patch.object(self.diag, 'hardware', return_value=[]).start()
+        self.addCleanup(mock.patch.stopall)
+
+    def read_report(self):
+        text = (self.source.parent / self.diag.NAME).read_text()
+        self.assertNotIn(self.password, text)
+        self.assertNotIn(self.psk, text)
+        fields = {}
+        for line in text.splitlines()[1:]:
+            key, value = line.split(': ', 1)
+            fields[key] = json.loads(value)
+        return fields
+
+    def test_failure_creates_diagnostic_file_and_retains_input(self):
+        with mock.patch.object(wifi, 'command', return_value=False), self.assertRaises(wifi.ProvisionError):
+            wifi.provision(self.source, self.connections)
+        fields = self.read_report()
+        self.assertEqual(fields['provisioning_result'], 'failed')
+        self.assertEqual(fields['parsing'], 'succeeded')
+        self.assertTrue(fields['provisioning_file_found'])
+        self.assertTrue(fields['profile_created'])
+        self.assertFalse(fields['profile_loaded'])
+        self.assertEqual(fields['requested_ssid'], self.ssid)
+        self.assertTrue(self.source.exists())
+
+    def test_missing_wifi_device_is_reported(self):
+        with mock.patch.object(wifi, 'wifi_available', return_value=False), self.assertRaises(wifi.ProvisionError):
+            wifi.provision(self.source, self.connections)
+        fields = self.read_report()
+        self.assertEqual(fields['device_detection'], 'no-wifi-interface')
+        self.assertFalse(fields['profile_created'])
+        self.assertIn('No Wi-Fi interface', fields['reason'])
+        self.assertTrue(self.source.exists())
+
+    def test_cached_requested_ssid_visibility_is_recorded_without_other_networks(self):
+        for visible in (False, True):
+            with self.subTest(visible=visible):
+                def probe(args, **kwargs):
+                    if 'SSID' in args:
+                        self.assertIn('--rescan', args)
+                        self.assertEqual(args[-1], 'no')
+                        return 0, 'UNRELATED_TEST_NETWORK\n' + (self.ssid + '\n' if visible else '')
+                    if 'DEVICE,TYPE,STATE' in args:
+                        return 0, 'wlan0:wifi:disconnected\n'
+                    return 127, ''
+                with mock.patch.object(self.diag, 'probe', side_effect=probe), \
+                     mock.patch.object(wifi, 'command', return_value=False), self.assertRaises(wifi.ProvisionError):
+                    wifi.provision(self.source, self.connections)
+                fields = self.read_report()
+                self.assertEqual(fields['requested_ssid_visible'], 'yes' if visible else 'no')
+                self.assertEqual(fields['wifi_interfaces'], ['wlan0'])
+                self.assertNotIn('UNRELATED_TEST_NETWORK', (self.source.parent / self.diag.NAME).read_text())
+
+    def test_activation_error_is_classified_and_never_leaks_output(self):
+        token = 'SYNTHETIC_TOKEN_NOT_FOR_REPORT'
+        def run(args, **kwargs):
+            failed = 'up' in args
+            text = f'Secrets were required but not provided PASSWORD={self.password} psk={self.psk} token={token}'
+            return types.SimpleNamespace(returncode=4 if failed else 0, stdout=text, stderr=text)
+        output = io.StringIO()
+        with mock.patch.object(wifi.subprocess, 'run', side_effect=run), contextlib.redirect_stdout(output), \
+             self.assertRaises(wifi.ProvisionError):
+            wifi.provision(self.source, self.connections)
+        fields = self.read_report()
+        self.assertEqual(fields['activation'], 'failed')
+        self.assertEqual(fields['networkmanager_error'],
+                         {'category': 'authentication-or-secrets-unavailable', 'exit_code': 4})
+        text = (self.source.parent / self.diag.NAME).read_text() + output.getvalue()
+        for forbidden in (self.password, self.psk, token):
+            self.assertNotIn(forbidden, text)
+        self.assertTrue(self.source.exists())
+
+    def test_success_is_reported_and_existing_deletion_behavior_remains(self):
+        with mock.patch.object(wifi, 'command', return_value=True):
+            self.assertTrue(wifi.provision(self.source, self.connections))
+        fields = self.read_report()
+        self.assertEqual(fields['activation'], 'succeeded')
+        self.assertEqual(fields['provisioning_result'], 'success')
+        self.assertEqual(fields['provisioning_service_result'], 'success')
+        self.assertTrue(fields['profile_loaded'])
+        self.assertTrue(fields['autoconnect_persisted'])
+        self.assertTrue(fields['input_removed'])
+        self.assertFalse(self.source.exists())
+
+    def test_network_snapshot_is_structured_and_excludes_unknown_fields(self):
+        token = 'SYNTHETIC_QUERY_TOKEN'
+        def probe(args, **kwargs):
+            if args[0] == 'systemctl':
+                return 0, 'active\n'
+            if 'radio' in args:
+                return 0, 'enabled\n'
+            if 'DEVICE,TYPE,STATE' in args:
+                return 0, 'wlan0:wifi:disconnected\n'
+            if 'GENERAL.STATE,GENERAL.REASON' in args:
+                return 0, f'30 (disconnected)\n7 ({token})\n'
+            if 'SSID' in args:
+                return 0, self.ssid + '\n'
+            if args[:3] == ['ip', '-j', 'address']:
+                return 0, json.dumps([{'ifname': 'wlan0', 'addr_info': [{'local': '192.0.2.2'}], 'token': token}])
+            if args[0] == 'ip':
+                return 0, json.dumps([{'dev': 'wlan0', 'gateway': '192.0.2.1', 'token': token}])
+            if args[0] == 'dmesg':
+                return 0, f'iwlwifi: firmware failed with error -2 token={token}'
+            return 127, ''
+        with mock.patch.object(self.diag, 'probe', side_effect=probe), \
+             mock.patch.object(wifi, 'command', return_value=False), self.assertRaises(wifi.ProvisionError):
+            wifi.provision(self.source, self.connections)
+        fields = self.read_report()
+        self.assertEqual(fields['networkmanager_service'], 'active')
+        self.assertEqual(fields['avahi_service'], 'active')
+        self.assertEqual(fields['wifi_radio'], 'enabled')
+        self.assertEqual(fields['ip_addresses'], [{'interface': 'wlan0', 'address': '192.0.2.2'}])
+        self.assertEqual(fields['default_routes'], [{'interface': 'wlan0', 'gateway': '192.0.2.1'}])
+        self.assertEqual(fields['nm_device_reason_codes'], {'wlan0': [30, 7]})
+        self.assertNotIn(token, (self.source.parent / self.diag.NAME).read_text())
+
+    def test_parse_failure_is_reported_without_password(self):
+        self.source.write_text(f'SSID={self.ssid}\nPASSWORD={self.password}\nUNKNOWN=bad\n')
+        with self.assertRaises(wifi.ProvisionError):
+            wifi.provision(self.source, self.connections)
+        fields = self.read_report()
+        self.assertEqual(fields['parsing'], 'failed')
+        self.assertFalse(fields['profile_created'])
+        self.assertTrue(self.source.exists())
+
+    def test_firmware_text_is_reduced_to_fixed_events(self):
+        events = self.diag.firmware_events(f'iwlwifi: firmware load failed with error -2 token={self.password} psk={self.psk}')
+        self.assertEqual(events, [{'event': 'firmware-load-failed', 'driver': 'iwlwifi', 'errno': -2}])
+
+    def test_finalizer_creates_report_if_importer_never_wrote_checkpoint(self):
+        with mock.patch.object(self.diag.os.path, 'ismount', return_value=True), \
+             mock.patch.dict(os.environ, {'SERVICE_RESULT': 'exit-code'}):
+            self.diag.finalize(self.source)
+        text = (self.source.parent / self.diag.NAME).read_text()
+        self.assertIn('no-importer-checkpoint', text)
+        self.assertIn(self.ssid, text)
+        self.assertIn('systemd_service_result: exit-code', text)
+        self.assertNotIn(self.password, text)
+        self.assertNotIn(self.psk, text)
+        self.assertTrue(self.source.exists())
+
+    def test_timeout_finalizer_records_actual_systemd_result(self):
+        report = wifi.Report(self.source)
+        report.input(self.source.read_bytes())
+        report.fields['activation'] = 'in-progress'
+        report.write()
+        with mock.patch.object(self.diag.os.path, 'ismount', return_value=True), \
+             mock.patch.dict(os.environ, {'SERVICE_RESULT': 'timeout'}):
+            self.diag.finalize(self.source)
+        text = (self.source.parent / self.diag.NAME).read_text()
+        self.assertIn('systemd_service_result: timeout', text)
+        self.assertNotIn(self.password, text)
+        self.assertTrue(self.source.exists())
+
+
 class LayoutTests(unittest.TestCase):
     def test_partition_and_empty_config(self):
         parts = sorted((ROOT / 'mkosi.repart').glob('*.conf'))
@@ -212,6 +384,8 @@ class LayoutTests(unittest.TestCase):
         self.assertEqual(service['Service']['Type'], 'oneshot')
         self.assertEqual(service['Service']['Restart'], 'no')
         self.assertEqual(service['Service']['TimeoutStartSec'], '120s')
+        self.assertEqual(service['Service']['ExecStopPost'], '/usr/bin/python3 /usr/lib/randy/wifi_diagnostics.py')
+        self.assertEqual(service['Service']['TimeoutStopSec'], '15s')
         self.assertEqual(service['Install']['WantedBy'], 'multi-user.target')
         self.assertEqual(mount['Mount']['What'], '/dev/disk/by-label/CONFIG')
         self.assertEqual(mount['Mount']['Where'], '/run/randy-config')

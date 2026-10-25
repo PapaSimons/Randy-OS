@@ -8,6 +8,9 @@ ConditionPathIsMountPoint=/run/randy-config
 Type=oneshot
 User=root
 ExecStart=/usr/bin/python3 /usr/lib/randy/wifi-import.py
+# Also record systemd's actual result after failure/timeout or eventual stop.
+ExecStopPost=/usr/bin/python3 /usr/lib/randy/wifi_diagnostics.py
+TimeoutStopSec=15s
 TimeoutStartSec=120s
 Restart=no
 RemainAfterExit=yes

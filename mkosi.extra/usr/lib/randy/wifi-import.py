@@ -10,6 +10,8 @@ import tempfile
 import time
 import uuid
 
+from wifi_diagnostics import Report, error_category
+
 SOURCE = Path('/run/randy-config/randy-wifi.txt')
 CONNECTIONS = Path('/etc/NetworkManager/system-connections')
 PROFILE_UUID = str(uuid.uuid5(uuid.NAMESPACE_URL, 'urn:randy-os:wifi-provisioning'))
@@ -85,13 +87,26 @@ method=auto
 '''
 
 
-def command(*args, timeout=10):
-    # Never forward nmcli/iw output: errors can include SSIDs or other input.
+def command(*args, timeout=10, report=None):
+    # Only fixed categories/status numbers may escape captured child output.
     try:
-        return subprocess.run(args, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
-                              stderr=subprocess.DEVNULL, timeout=timeout, check=False).returncode == 0
-    except (OSError, subprocess.TimeoutExpired):
-        return False
+        result = subprocess.run(args, stdin=subprocess.DEVNULL,
+                                stdout=subprocess.PIPE if report else subprocess.DEVNULL,
+                                stderr=subprocess.PIPE if report else subprocess.DEVNULL,
+                                text=True, timeout=timeout, check=False,
+                                env=dict(os.environ, LC_ALL='C'))
+        if report and result.returncode:
+            report.fields['networkmanager_error'] = {
+                'category': error_category((result.stdout or '') + (result.stderr or '')),
+                'exit_code': int(result.returncode)}
+        return result.returncode == 0
+    except subprocess.TimeoutExpired:
+        if report:
+            report.fields['networkmanager_error'] = {'category': 'command-timed-out'}
+    except (OSError, UnicodeError):
+        if report:
+            report.fields['networkmanager_error'] = {'category': 'command-unavailable-or-unreadable'}
+    return False
 
 
 def wifi_available():
@@ -121,37 +136,77 @@ def write_profile(directory, contents):
 
 
 def provision(source=SOURCE, connections=CONNECTIONS):
+    report = Report(source)
+    report.write()  # Leave a checkpoint even if the service is later terminated.
     try:
-        # No symlinks or special files, and bounded reads even on malformed media.
-        fd = os.open(source, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
-    except FileNotFoundError:
-        return False
-    with os.fdopen(fd, 'rb') as stream:
-        if not stat.S_ISREG(os.fstat(stream.fileno()).st_mode):
-            raise ProvisionError('Provisioning input must be a regular file.')
-        data = stream.read(8193)
-    ssid, password, country = parse_config(data)
-    if not wifi_available():
-        raise ProvisionError('No Wi-Fi interface detected; provisioning file retained.')
-    if country and not command('iw', 'reg', 'set', country):
-        print('Wi-Fi country hint could not be applied; continuing.', flush=True)
-    profile = write_profile(connections, keyfile(ssid, password))
-    if not command('nmcli', 'connection', 'load', str(profile)):
-        raise ProvisionError('NetworkManager could not load the profile; file retained.')
-    if not command('nmcli', '--wait', '45', 'connection', 'up', 'uuid', PROFILE_UUID,
-                   timeout=50):
-        command('nmcli', '--wait', '5', 'connection', 'down', 'uuid', PROFILE_UUID,
-                timeout=6)
-        raise ProvisionError('Wi-Fi activation failed or timed out; provisioning file retained.')
-    if not command('nmcli', 'connection', 'modify', 'uuid', PROFILE_UUID,
-                   'connection.autoconnect', 'yes', timeout=10):
-        raise ProvisionError('Could not persist autoconnect; provisioning file retained.')
-    # Do not remove a replacement file written while activation was in progress.
-    if source.read_bytes() != data:
-        raise ProvisionError('Provisioning file changed; replacement retained.')
-    source.unlink()
-    print('Wi-Fi connected; provisioning file removed.', flush=True)
-    return True
+        try:
+            fd = os.open(source, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+        except FileNotFoundError:
+            report.fields.update(provisioning_result='no-input', reason='no-provisioning-file',
+                                 provisioning_service_result='success')
+            return False
+        report.fields['provisioning_file_found'] = True
+        with os.fdopen(fd, 'rb') as stream:
+            if not stat.S_ISREG(os.fstat(stream.fileno()).st_mode):
+                raise ProvisionError('Provisioning input must be a regular file.')
+            data = stream.read(8193)
+        report.input(data)
+        report.fields['parsing'] = 'failed'
+        ssid, password, country = parse_config(data)
+        report.fields['parsing'] = 'succeeded'
+        report.write()
+        if not wifi_available():
+            report.fields['device_detection'] = 'no-wifi-interface'
+            raise ProvisionError('No Wi-Fi interface detected; provisioning file retained.')
+        report.fields['device_detection'] = 'wifi-interface-found'
+        if country and not command('iw', 'reg', 'set', country):
+            print('Wi-Fi country hint could not be applied; continuing.', flush=True)
+        contents = keyfile(ssid, password)
+        report.secrets.add(contents.split('psk=', 1)[1].splitlines()[0])
+        profile = write_profile(connections, contents)
+        report.fields['profile_created'] = True
+        report.write()
+        if not command('nmcli', 'connection', 'load', str(profile), report=report):
+            raise ProvisionError('NetworkManager could not load the profile; file retained.')
+        report.fields.update(profile_loaded=True, activation='in-progress')
+        report.write()
+        if not command('nmcli', '--wait', '45', 'connection', 'up', 'uuid', PROFILE_UUID,
+                       timeout=50, report=report):
+            report.fields['activation'] = 'failed'
+            command('nmcli', '--wait', '5', 'connection', 'down', 'uuid', PROFILE_UUID,
+                    timeout=6)
+            raise ProvisionError('Wi-Fi activation failed or timed out; provisioning file retained.')
+        report.fields['activation'] = 'succeeded'
+        report.write()
+        if not command('nmcli', 'connection', 'modify', 'uuid', PROFILE_UUID,
+                       'connection.autoconnect', 'yes', timeout=10, report=report):
+            raise ProvisionError('Could not persist autoconnect; provisioning file retained.')
+        report.fields['autoconnect_persisted'] = True
+        if source.read_bytes() != data:
+            raise ProvisionError('Provisioning file changed; replacement retained.')
+        source.unlink()
+        report.fields.update(input_removed=True, provisioning_result='success',
+                             reason='connected', provisioning_service_result='success')
+        print('Wi-Fi connected; provisioning file removed.', flush=True)
+        return True
+    except ProvisionError as error:
+        # All ProvisionError strings originate from fixed messages in this module.
+        report.fields.update(provisioning_result='failed', reason=str(error),
+                             provisioning_service_result='exit-code (1)')
+        raise
+    except (OSError, ValueError) as error:
+        if isinstance(error, OSError) and error.errno is not None:
+            report.fields['filesystem_errno'] = error.errno
+        report.fields.update(provisioning_result='failed', reason='filesystem-or-input-error',
+                             provisioning_service_result='exit-code (1)')
+        raise
+    finally:
+        report.write()  # Record result before running any optional diagnostics.
+        try:
+            report.collect()
+        except (OSError, ValueError, TypeError):
+            report.fields['diagnostic_collection'] = 'partial'
+        report.write()
 
 
 def main():
