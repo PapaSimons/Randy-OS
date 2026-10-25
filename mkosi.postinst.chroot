@@ -1,0 +1,8 @@
+#!/bin/sh
+# These checks run against final runtime packages, without the build overlay.
+set -eu
+/usr/bin/node --version
+/usr/bin/squeezelite -?
+/usr/bin/perl -c /usr/sbin/squeezeboxserver
+cd /opt/randy
+/usr/bin/node -e "for (const m of ['express','body-parser','music-metadata','socket.io','./lib/player/lms']) require(m)"

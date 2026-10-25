@@ -1,4 +1,4 @@
-name: Build Alpha 1 image
+name: Build Alpha 2 image
 
 on:
   push:
@@ -61,26 +61,33 @@ jobs:
         shell: bash
         run: |
           set -o pipefail
-          sudo scripts/validate-image.sh mkosi.output/randy-os-alpha1-x86_64.raw 2>&1 | tee image-validation.log
+          sudo scripts/validate-image.sh mkosi.output/randy-os-alpha2-x86_64.raw 2>&1 | tee image-validation.log
       - name: Upload image validation log
         if: ${{ always() && (steps.validate.outcome == 'success' || steps.validate.outcome == 'failure') }}
         uses: actions/upload-artifact@v4
         with:
-          name: randy-os-alpha1-validation-log
+          name: randy-os-alpha2-validation-log
           path: image-validation.log
           if-no-files-found: error
       - name: Compress image and checksum
         working-directory: mkosi.output
         run: |
           sudo chown -R "$(id -u):$(id -g)" .
-          xz -T2 -6 randy-os-alpha1-x86_64.raw
-          sha256sum randy-os-alpha1-x86_64.raw.xz > SHA256SUMS
+          sudo chown "$(id -u):$(id -g)" ../image-size-report.txt
+          stat --printf='Raw logical bytes: %s\n' randy-os-alpha2-x86_64.raw >> ../image-size-report.txt
+          du -B1 randy-os-alpha2-x86_64.raw >> ../image-size-report.txt
+          xz -T2 -6 randy-os-alpha2-x86_64.raw
+          stat --printf='Compressed bytes: %s\n' randy-os-alpha2-x86_64.raw.xz >> ../image-size-report.txt
+          cat ../image-size-report.txt
+          cp ../image-size-report.txt .
+          sha256sum randy-os-alpha2-x86_64.raw.xz > SHA256SUMS
       - uses: actions/upload-artifact@v4
         with:
-          name: randy-os-alpha1-x86_64
+          name: randy-os-alpha2-x86_64
           compression-level: 0
           if-no-files-found: error
           path: |
-            mkosi.output/randy-os-alpha1-x86_64.raw.xz
+            mkosi.output/randy-os-alpha2-x86_64.raw.xz
             mkosi.output/SHA256SUMS
             mkosi.output/*.manifest
+            mkosi.output/image-size-report.txt

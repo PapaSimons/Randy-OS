@@ -1,0 +1,58 @@
+#!/usr/bin/python3
+"""Safe appliance diagnostics: never dump environment, preferences or log messages."""
+import datetime
+import json
+from pathlib import Path
+import re
+import subprocess
+
+UNITS = ('lyrionmusicserver.service', 'squeezelite.service', 'randy.service')
+
+
+def capture(args):
+    try:
+        result = subprocess.run(args, capture_output=True, text=True, timeout=15)
+        return result.stdout if result.returncode == 0 else '(command unavailable or failed)'
+    except (OSError, subprocess.TimeoutExpired):
+        return '(command unavailable or timed out)'
+
+
+def main():
+    for unit in UNITS:
+        print('\n' + unit)
+        print(capture(['systemctl', 'show', unit, '--property=ActiveState,SubState,NRestarts,Result']))
+    print('\nNetwork listeners (expected: Randy TCP 3000, LMS TCP 9000/9090/3483 and UDP 3483)')
+    print(capture(['ss', '-lntup']))
+    try:
+        value = Path('/var/lib/randy-device/player.env').read_text()
+        print('\nPlayer ID:', value.strip() if re.fullmatch(r'LMS_PLAYER_ID=[0-9a-f:]{17}\n', value) else '(invalid)')
+    except OSError:
+        print('\nPlayer ID: not generated yet')
+    print('\nALSA hardware')
+    print(capture(['aplay', '-l']))
+    print('\nALSA PCM outputs')
+    print(capture(['aplay', '-L']))
+    print('\nRecent service journal errors (metadata only; message text may contain tokens)')
+    args = ['journalctl', '--no-pager', '--output=json', '--priority=err', '--since=-1h', '-n', '30']
+    for unit in UNITS:
+        args += ['-u', unit]
+    found = False
+    for line in capture(args).splitlines():
+        try:
+            row = json.loads(line)
+            stamp = datetime.datetime.fromtimestamp(int(row['__REALTIME_TIMESTAMP']) / 1_000_000,
+                                                     datetime.timezone.utc).isoformat()
+            unit = row.get('_SYSTEMD_UNIT', row.get('UNIT', 'unknown'))
+            if unit not in UNITS:
+                unit = 'systemd'
+            print(stamp, unit, 'priority=' + str(row.get('PRIORITY', '?')))
+            found = True
+        except (ValueError, KeyError, TypeError):
+            continue
+    if not found:
+        print('(no matching errors, or journal unavailable)')
+    print('LMS also writes /var/log/squeezeboxserver; logs/preferences are not dumped here.')
+
+
+if __name__ == '__main__':
+    main()

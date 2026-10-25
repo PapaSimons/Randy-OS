@@ -1,0 +1,4 @@
+# Root-managed for now. Future device selection must restart ONLY squeezelite.
+SL_NAME=Randy
+LMS_SERVER_HOST=127.0.0.1
+SL_SOUNDCARD=default

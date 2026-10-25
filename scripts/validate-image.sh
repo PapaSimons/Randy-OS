@@ -110,7 +110,7 @@ check_packages() {
     # No grep -q pipeline: SIGPIPE must not hide a forbidden package match.
     run 'Reject excluded desktop, audio-server and container packages' python3 -c '
 import re, sys
-pattern = re.compile(r"^(xserver-xorg.*|xwayland|weston|gdm3|sddm|lightdm|pulseaudio.*|pipewire.*|docker.*|moby.*)(:.*)?$")
+pattern = re.compile(r"^(xserver-xorg.*|xwayland|weston|gdm3|sddm|lightdm|pulseaudio.*|pipewire.*|docker.*|moby.*|ffmpeg|yt-dlp|libavcodec.*|libavformat.*)(:.*)?$")
 bad = [line for line in sys.stdin.read().splitlines() if pattern.fullmatch(line)]
 print("Expected: no excluded packages\nActual: " + (", ".join(bad) if bad else "none"))
 if bad:
@@ -159,7 +159,7 @@ main() {
     fi
     local image=$1 tool device root packages machine_id
     for tool in uname id sfdisk python3 losetup udevadm lsblk blkid mount umount mountpoint \
-                find systemctl systemd-analyze dpkg-query readlink ls cat mktemp mkdir rm; do
+                find systemctl systemd-analyze dpkg-query readlink ls cat mktemp mkdir rm du df; do
         capture "Required host command: $tool" command -v "$tool"
     done
     capture 'Linux host kernel (x86_64 guest is checked through its GPT root type)' uname -s
@@ -233,7 +233,7 @@ main() {
     fi
     capture 'No cloned SSH host keys' find "$root/etc/ssh" -maxdepth 1 -name 'ssh_host_*' -print
     equal 'SSH host key paths' '' "$command_output"
-    for tool in NetworkManager avahi-daemon ssh systemd-timesyncd randy-wifi-import; do
+    for tool in NetworkManager avahi-daemon ssh systemd-timesyncd randy-wifi-import lyrionmusicserver squeezelite randy-player-id randy; do
         capture "$tool.service must be enabled" systemctl --root="$root" is-enabled "$tool.service"
         equal "$tool.service enablement" enabled "$command_output"
     done
@@ -246,6 +246,37 @@ main() {
     run 'Verify installed systemd units and referenced executables against guest root' \
         systemd-analyze --root="$root" verify /etc/systemd/system/randy-wifi-import.service \
         '/etc/systemd/system/run-randy\x2dconfig.mount'
+    check_file 'LMS executable' "$root/usr/sbin/squeezeboxserver" -x
+    check_file 'LMS Perl application' "$root/usr/share/perl5/Slim/bootstrap.pm" -f
+    check_file 'LMS web assets' "$root/usr/share/squeezeboxserver/HTML/Default/index.html" -f
+    check_file 'Squeezelite executable' "$root/usr/bin/squeezelite" -x
+    check_file 'Node runtime' "$root/usr/bin/node" -x
+    check_file 'Randy application' "$root/opt/randy/index.js" -s
+    check_file 'Randy production Express dependency' "$root/opt/randy/node_modules/express/package.json" -s
+    check_file 'Pinned stack manifest' "$root/usr/share/randy-os/stack.lock.json" -s
+    capture 'Randy persistent DB symlink' readlink "$root/opt/randy/DB"
+    equal 'Randy DB state location' /var/lib/randy "$command_output"
+    capture 'No cloned player identity' find "$root/var/lib" -path '*/randy-device/player.env' -print
+    equal 'First-boot player identity must not be baked in' '' "$command_output"
+    capture 'No application git history' find "$root/opt/randy" -name .git -print
+    equal 'Application history paths' '' "$command_output"
+    for tool in lyrionmusicserver squeezelite randy-player-id randy; do
+        check_file "$tool unit installed" "$root/usr/lib/systemd/system/$tool.service" -s
+    done
+    run 'Verify music stack units against guest executables/users' \
+        systemd-analyze --root="$root" verify lyrionmusicserver.service squeezelite.service \
+        randy-player-id.service randy.service
+    run 'Music stack versions and installed component byte counts' \
+        cat "$root/usr/share/randy-os/stack.lock.json" "$root/usr/share/randy-os/component-sizes.json"
+    capture 'Alpha 2 root file usage (allocated bytes)' du -sx --block-size=1 "$root"
+    root_usage=$command_output
+    run 'Alpha 2 root filesystem allocation including metadata' df -B1 "$root"
+    filesystem_usage=$command_output
+    printf 'Alpha 1 reference: approximately 556 MiB allocated (user observation, not remeasured)\nAlpha 2 root du (allocated bytes): %s\nRoot filesystem df:\n%s\n' \
+        "$root_usage" "$filesystem_usage" > image-size-report.txt
+    run 'Major music stack component usage' du -sx --block-size=1 \
+        "$root/opt/randy" "$root/usr/share/squeezeboxserver" "$root/usr/share/perl5" \
+        "$root/usr/bin/node" "$root/usr/bin/squeezelite"
     capture 'No provisioning input in guest root' find "$root" -type f -name randy-wifi.txt -print -quit
     equal 'provisioning input paths' '' "$command_output"
     capture 'No pre-provisioned NetworkManager profiles' \

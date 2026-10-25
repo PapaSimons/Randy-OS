@@ -7,3 +7,7 @@ disable systemd-networkd.service
 disable systemd-networkd.socket
 disable systemd-networkd-wait-online.service
 enable randy-wifi-import.service
+enable lyrionmusicserver.service
+enable squeezelite.service
+enable randy-player-id.service
+enable randy.service

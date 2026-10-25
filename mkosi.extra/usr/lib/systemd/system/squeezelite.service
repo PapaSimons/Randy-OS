@@ -1,0 +1,26 @@
+[Unit]
+Description=Randy Squeezelite ALSA player
+Wants=network-online.target lyrionmusicserver.service
+After=network-online.target sound.target lyrionmusicserver.service randy-player-id.service
+Requires=randy-player-id.service
+StartLimitIntervalSec=120
+StartLimitBurst=6
+
+[Service]
+Type=simple
+User=squeezelite
+Group=squeezelite
+SupplementaryGroups=audio
+EnvironmentFile=/etc/default/squeezelite
+EnvironmentFile=/var/lib/randy-device/player.env
+ExecStart=/usr/bin/squeezelite -n ${SL_NAME} -s ${LMS_SERVER_HOST} -m ${LMS_PLAYER_ID} -o ${SL_SOUNDCARD}
+Restart=on-failure
+RestartSec=30s
+TimeoutStopSec=15s
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+
+[Install]
+WantedBy=multi-user.target

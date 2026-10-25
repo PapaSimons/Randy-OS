@@ -1,0 +1,30 @@
+[Unit]
+Description=Randy music application (LMS backend)
+Wants=network-online.target lyrionmusicserver.service squeezelite.service
+After=network-online.target lyrionmusicserver.service squeezelite.service randy-player-id.service
+Requires=randy-player-id.service
+StartLimitIntervalSec=120
+StartLimitBurst=6
+
+[Service]
+Type=simple
+User=randy
+Group=randy
+SupplementaryGroups=audio
+EnvironmentFile=/etc/randy/randy.env
+EnvironmentFile=/var/lib/randy-device/player.env
+WorkingDirectory=/opt/randy
+ExecStart=/usr/bin/node /opt/randy/index.js
+StateDirectory=randy
+StateDirectoryMode=0750
+Restart=on-failure
+RestartSec=30s
+TimeoutStopSec=20s
+UMask=0027
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+
+[Install]
+WantedBy=multi-user.target

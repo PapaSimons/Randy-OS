@@ -1,0 +1,23 @@
+{
+  "lms": {
+    "version": "9.1.1",
+    "url": "https://downloads.lms-community.org/LyrionMusicServer_v9.1.1/lyrionmusicserver_9.1.1_amd64.deb",
+    "sha256": "7688f24650bc8edeeafc80aa34d5f7bf980ff105f4a8edc149c84c5ac8b26989"
+  },
+  "squeezelite": {
+    "version": "2.0.0-1584",
+    "commit": "e1028f3cd058789c12b765d68b82e8b3b0b43a7b",
+    "url": "https://github.com/ralph-irving/squeezelite/archive/e1028f3cd058789c12b765d68b82e8b3b0b43a7b.tar.gz",
+    "sha256": "20f2d1efa6b794bdc772aebd38bbb0f4c9513a3b57ff7019e5fb954e7acfcbb7"
+  },
+  "node": {
+    "version": "22.23.4",
+    "url": "https://nodejs.org/dist/v22.23.4/node-v22.23.4-linux-x64.tar.xz",
+    "sha256": "1805bcd35e6815559bd2eb97db438d3fdb0eb3a5e6a977b7c1badca76337e9ce"
+  },
+  "randy": {
+    "commit": "92dc6e07448934fc211d7e3d6dd2333383216192",
+    "url": "https://github.com/PapaSimons/Randy/archive/92dc6e07448934fc211d7e3d6dd2333383216192.tar.gz",
+    "sha256": "8189d064c64524d8c29ffe04e06fb405c45b9c0ab7314a94ee5f4928c6d70806"
+  }
+}
