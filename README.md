@@ -42,6 +42,16 @@ for subsequent maintenance; the snapshot pins the image build, not runtime updat
 | 2 | Microsoft basic data | FAT32 | CONFIG | 64 MiB | /run/randy-config |
 | 3 | Linux x86-64 root | ext4 | RANDY | 8 GiB | / |
 
+The disk uses `SectorSize=512`. Both FAT filesystems additionally receive
+`SYSTEMD_REPART_MKFS_OPTIONS_VFAT="-S 512"` through mkosi's `[Build] Environment`
+setting. Mkosi v27.1 passes that environment to systemd-repart, including builds
+invoked with `sudo` in GitHub Actions. This avoids repart's default 4096-byte
+filesystem sectors, which macOS refused to mount on the tested 512-byte USB.
+Validation reads both EFI and CONFIG FAT BPB fields at offset `0x0B` and requires
+512 bytes per sector; `blkid` identifying VFAT alone is not sufficient. No
+partition is reformatted after mkosi. Carry this base-image fix into Alpha 2
+without altering its music stack.
+
 Sizes use systemd's binary M/G units. The raw disk is slightly larger than
 8.5625 GiB because of GPT/alignment overhead. Use media with at least 16 GB capacity.
 There is no MUSIC partition and no first-boot partition/filesystem expansion;

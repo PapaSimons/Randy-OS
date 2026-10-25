@@ -64,6 +64,30 @@ probe_equal() {
     equal "$device $field" "$expected" "$command_output"
 }
 
+validate_fat_sector_size() {
+    run "$2 FAT BPB BytesPerSector at offset 0x0B (expected 512)" python3 - "$1" "$2" <<'PYFAT'
+import sys
+
+path, label = sys.argv[1:]
+try:
+    with open(path, 'rb') as stream:
+        stream.seek(0x0B)
+        field = stream.read(2)
+except OSError as error:
+    print(f'ERROR: {label} FAT BPB read failed\nExpected: readable two-byte BytesPerSector field\nActual: {error}', file=sys.stderr)
+    sys.exit(1)
+if len(field) != 2:
+    print(f'ERROR: {label} FAT BPB is truncated\nExpected: 2 bytes\nActual: {len(field)} bytes', file=sys.stderr)
+    sys.exit(1)
+actual = int.from_bytes(field, 'little')
+print(f'[CHECK] {label} FAT BPB BytesPerSector\nExpected: 512\nActual: {actual} (BPB bytes: {field.hex(" ")})', flush=True)
+if actual != 512:
+    print(f'ERROR: {label} FAT filesystem must use 512-byte logical sectors', file=sys.stderr)
+    sys.exit(1)
+print('[OK] FAT logical sector size is 512', flush=True)
+PYFAT
+}
+
 validate_partitions() {
     run 'GPT partition table: scheme, sector units, count, order, GUIDs, labels and exact sizes' \
         python3 - "$1" <<'PY'
@@ -194,9 +218,11 @@ main() {
     done
     probe_equal "${loop}p1" TYPE vfat
     probe_equal "${loop}p1" LABEL EFI
+    validate_fat_sector_size "${loop}p1" EFI
     probe_equal "${loop}p2" TYPE vfat
     probe_equal "${loop}p2" VERSION FAT32
     probe_equal "${loop}p2" LABEL CONFIG
+    validate_fat_sector_size "${loop}p2" CONFIG
     probe_equal "${loop}p3" TYPE ext4
     probe_equal "${loop}p3" LABEL RANDY
 

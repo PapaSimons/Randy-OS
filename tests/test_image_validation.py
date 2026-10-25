@@ -1,5 +1,7 @@
 """Exercise the actual validator helpers without Linux mounts or a disk image."""
 import json
+import configparser
+import shlex
 import os
 from pathlib import Path
 import subprocess
@@ -36,6 +38,54 @@ class ImageValidationTests(unittest.TestCase):
             path = Path(work) / 'table.json'
             path.write_text(json.dumps(table))
             return self.call('validate_partitions', str(path))
+
+    def test_vfat_sector_settings_are_explicit_mkosi_configuration(self):
+        config = configparser.ConfigParser(interpolation=None)
+        config.optionxform = str
+        config.read(ROOT / 'mkosi.conf')
+        self.assertEqual(config['Output']['SectorSize'], '512')
+        # Model the documented shell-style parsing of mkosi Environment= values.
+        settings = dict(item.split('=', 1) for item in shlex.split(config['Build']['Environment']))
+        self.assertEqual(settings['SYSTEMD_REPART_MKFS_OPTIONS_VFAT'], '-S 512')
+
+    def test_both_fat_partitions_are_checked_in_the_image_validator(self):
+        text = SCRIPT.read_text()
+        self.assertIn('validate_fat_sector_size "${loop}p1" EFI', text)
+        self.assertIn('validate_fat_sector_size "${loop}p2" CONFIG', text)
+
+    def test_fat_bpb_accepts_512_for_both_partitions(self):
+        with tempfile.TemporaryDirectory() as work:
+            path = Path(work) / 'fat-sector.bin'
+            sector = bytearray(512)
+            sector[:3] = bytes.fromhex('eb5890')
+            sector[3:11] = b'mkfs.fat'
+            sector[11:13] = (512).to_bytes(2, 'little')
+            path.write_bytes(sector)
+            for label in ('EFI', 'CONFIG'):
+                result = self.call('validate_fat_sector_size', str(path), label)
+                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                self.assertIn('Actual: 512', result.stdout)
+
+    def test_fat_bpb_rejects_1024_2048_and_reported_4096_regression(self):
+        with tempfile.TemporaryDirectory() as work:
+            path = Path(work) / 'fat-sector.bin'
+            for size in (1024, 2048, 4096):
+                sector = bytearray(512)
+                sector[:3] = bytes.fromhex('eb5890')
+                sector[3:11] = b'mkfs.fat'
+                sector[11:13] = size.to_bytes(2, 'little')
+                path.write_bytes(sector)
+                for label in ('EFI', 'CONFIG'):
+                    with self.subTest(size=size, partition=label):
+                        result = self.call('validate_fat_sector_size', str(path), label)
+                        self.assert_diagnostic(result, label, 'Expected: 512', f'Actual: {size}')
+
+    def test_fat_bpb_missing_and_truncated_data_fail_diagnostically(self):
+        with tempfile.TemporaryDirectory() as work:
+            path = Path(work) / 'fat-sector.bin'
+            self.assert_diagnostic(self.call('validate_fat_sector_size', str(path), 'CONFIG'), 'BPB read failed')
+            path.write_bytes(bytes(12))
+            self.assert_diagnostic(self.call('validate_fat_sector_size', str(path), 'EFI'), 'truncated', 'Actual: 1 bytes')
 
     def test_valid_partition_table(self):
         result = self.validate_table(self.table())
