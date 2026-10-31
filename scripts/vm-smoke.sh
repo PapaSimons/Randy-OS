@@ -9,8 +9,10 @@ source_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 image=$(realpath -- "$1")
 log_dir=$(pwd)/vm-smoke-logs
 mkdir -p "$log_dir"
+for log in serial.log console.log qemu.log result.txt; do : > "$log_dir/$log"; done
+printf 'Host: preparing disposable VM image\n' > "$log_dir/result.txt"
 exec > >(tee "$log_dir/host.log") 2>&1
-for tool in qemu-system-x86_64 timeout losetup udevadm mount umount objcopy python3; do
+for tool in qemu-system-x86_64 losetup udevadm mount umount objcopy python3; do
     command -v "$tool" >/dev/null
 done
 firmware=${OVMF_CODE:-/usr/share/OVMF/OVMF_CODE_4M.fd}
@@ -68,20 +70,17 @@ losetup -d "$loop"
 loop=
 echo 'Booting disposable image with OVMF UEFI and QEMU TCG (600-second limit)'
 status=0
-timeout --signal=TERM --kill-after=10s 600s \
+python3 "$source_dir/vm-smoke/run.py" --log-dir "$log_dir" -- \
     qemu-system-x86_64 -machine q35,accel=tcg -cpu max -smp 2 -m 2048 \
     -drive "if=pflash,format=raw,readonly=on,file=$firmware" \
     -drive "if=pflash,format=raw,file=$work/OVMF_VARS.fd" \
     -drive "if=virtio,format=raw,file=$work/smoke.raw" \
     -nic user,model=virtio-net-pci -display none -monitor none \
-    -serial "file:$log_dir/serial.log" -no-reboot \
-    > "$log_dir/qemu.log" 2>&1 || status=$?
-tr -d '\r' < "$log_dir/serial.log" > "$log_dir/console.log"
+    -serial "file:$log_dir/serial.log" -no-reboot || status=$?
 cat "$log_dir/console.log"
 cat "$log_dir/qemu.log"
-if (( status != 0 )) || ! grep -qx RANDY_VM_SMOKE_PASS "$log_dir/console.log" || \
-        grep -qx RANDY_VM_SMOKE_FAIL "$log_dir/console.log"; then
-    echo "VM smoke test FAILED (QEMU/timeout status: $status). See $log_dir" >&2
+if (( status != 0 )); then
+    echo "VM smoke test FAILED. See $log_dir/result.txt and serial.log" >&2
     exit 1
 fi
 echo 'VM smoke test passed'

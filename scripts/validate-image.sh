@@ -266,6 +266,7 @@ main() {
     for tool in NetworkManager avahi-daemon sshd; do
         check_file "$tool executable in guest" "$root/usr/sbin/$tool" -x
     done
+    check_file 'OpenSSH per-connection session executable is installed' "$root/usr/lib/openssh/sshd-session" -x
     capture 'Read guest hostname' cat "$root/etc/hostname"
     equal 'hostname' randy "$command_output"
     step='first-boot machine ID'
@@ -282,6 +283,23 @@ main() {
     fi
     capture 'No cloned SSH host keys' find "$root/etc/ssh" -maxdepth 1 -name 'ssh_host_*' -print
     equal 'SSH host key paths' '' "$command_output"
+    # is-enabled returns 1 for disabled; retain that expected state as data.
+    capture 'Read SSH socket enablement' bash -c \
+        'state=$(systemctl --root="$1" is-enabled ssh.socket) || test "$state" = disabled; printf "%s\n" "$state"' -- "$root"
+    equal 'SSH socket is disabled (daemon owns port 22)' disabled "$command_output"
+    check_file 'Device-side host-key generation drop-in is installed' \
+        "$root/etc/systemd/system/ssh.service.d/10-host-keys.conf" -f
+    run 'Host-key generation precedes sshd validation regardless of first-boot state' \
+        python3 - "$root/etc/systemd/system/ssh.service.d/10-host-keys.conf" <<'PYSSH'
+from pathlib import Path
+import sys
+text = Path(sys.argv[1]).read_text()
+commands = [line.strip() for line in text.splitlines() if line.strip().startswith('ExecStartPre=')]
+expected = ['ExecStartPre=', 'ExecStartPre=/usr/bin/ssh-keygen -A', 'ExecStartPre=/usr/sbin/sshd -t']
+print(f'Expected: {expected!r}\nActual: {commands!r}')
+if commands != expected or 'ConditionFirstBoot=' in text:
+    sys.exit('ERROR: SSH pre-start host-key generation is not guaranteed')
+PYSSH
     for tool in NetworkManager avahi-daemon ssh systemd-timesyncd randy-wifi-import; do
         capture "$tool.service must be enabled" systemctl --root="$root" is-enabled "$tool.service"
         equal "$tool.service enablement" enabled "$command_output"
@@ -299,7 +317,7 @@ main() {
     check_file 'Optional CONFIG mount unit is installed' "$root/etc/systemd/system/"'run-randy\x2dconfig.mount' -f
     run 'Verify installed systemd units and referenced executables against guest root' \
         systemd-analyze --root="$root" verify /etc/systemd/system/randy-wifi-import.service \
-        '/etc/systemd/system/run-randy\x2dconfig.mount'
+        '/etc/systemd/system/run-randy\x2dconfig.mount' /usr/lib/systemd/system/ssh.service
     capture 'No provisioning input in guest root' find "$root" -type f -name randy-wifi.txt -print -quit
     equal 'provisioning input paths' '' "$command_output"
     capture 'No pre-provisioned NetworkManager profiles' \

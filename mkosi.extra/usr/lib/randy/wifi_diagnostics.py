@@ -86,6 +86,78 @@ def firmware_events(text):
     return events[-16:]
 
 
+def ssh_banner(address=('127.0.0.1', 22), timeout=1):
+    """Return a fixed state only; never expose an untrusted banner or key data."""
+    deadline = time.monotonic() + timeout
+    try:
+        with socket.create_connection(address, timeout=timeout) as connection:
+            data = b''
+            while len(data) < 255:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    return 'timeout'
+                connection.settimeout(remaining)
+                chunk = connection.recv(255 - len(data))
+                if not chunk:
+                    return 'closed-before-banner'
+                data += chunk
+                if b'\n' in data:
+                    line = data.split(b'\n', 1)[0].rstrip(b'\r')
+                    return 'received' if line.startswith(b'SSH-2.0-OpenSSH_') else 'invalid-banner'
+            return 'invalid-banner'
+    except (TimeoutError, socket.timeout):
+        return 'timeout'
+    except OSError:
+        return 'unavailable'
+
+
+def ssh_diagnostics(query, key_directory=Path('/etc/ssh')):
+    """Reduce local SSH state to fixed labels, never raw config/journal output."""
+    fields = {}
+    for unit, field in [('ssh.socket', 'ssh_socket_state'), ('ssh.service', 'ssh_service_state')]:
+        _, text = query(['systemctl', 'is-active', unit])
+        fields[field] = text.strip() if text.strip() in {
+            'active', 'inactive', 'failed', 'activating', 'deactivating', 'reloading'} else 'unknown'
+    try:
+        # Metadata only: do not read any private key or public-key fingerprint.
+        fields['ssh_host_keys_present'] = any(
+            path.is_file() and not path.is_symlink() and path.stat().st_size > 0
+            for path in key_directory.glob('ssh_host_*_key'))
+    except OSError:
+        fields['ssh_host_keys_present'] = 'unknown'
+    code, _ = query(['/usr/sbin/sshd', '-t'])
+    fields['ssh_config_validation'] = 'ok' if code == 0 else 'unknown' if code == 127 else 'failed'
+    # Exercise the per-connection child, not just the listening TCP socket.
+    fields['ssh_banner_state'] = ssh_banner()
+    _, text = query(['journalctl', '-b', '-u', 'ssh.service', '--no-pager', '-n', '30', '-o', 'cat'])
+    # Log text is used only for classification and is never serialized. Only use
+    # this evidence for a currently broken connection, since old failures can persist.
+    connection_failure = 'unknown'
+    if re.search(r'(rexec of .*sshd-session.*failed|sshd-session.*(?:not found|No such file|Permission denied))', text):
+        connection_failure = 'session-exec-failed'
+    elif re.search(r'(Missing privilege separation directory|Privilege separation user .* does not exist)', text):
+        connection_failure = 'privilege-separation-failed'
+    elif 'OpenSSL version mismatch' in text:
+        connection_failure = 'crypto-version-mismatch'
+    elif re.search(r'(drop connection .* past MaxStartups|beginning MaxStartups throttling|PerSourcePenalties)', text):
+        connection_failure = 'connection-rate-limited'
+    if fields['ssh_host_keys_present'] is False:
+        category = 'missing-host-keys'
+    elif fields['ssh_config_validation'] == 'failed':
+        category = 'invalid-config'
+    elif fields['ssh_service_state'] == 'failed':
+        category = 'service-start-failed'
+    elif fields['ssh_socket_state'] == 'active' and fields['ssh_service_state'] == 'inactive':
+        category = 'socket-only'
+    elif (fields['ssh_service_state'] == 'active' and fields['ssh_config_validation'] == 'ok'
+          and fields['ssh_banner_state'] == 'received'):
+        category = 'ok'
+    else:
+        category = connection_failure
+    fields['ssh_failure_category'] = category
+    return fields
+
+
 class Report:
     def __init__(self, source):
         self.source = source
@@ -102,6 +174,9 @@ class Report:
                            autoconnect_persisted=False, input_removed=False,
                            provisioning_result='in-progress', reason='not-completed',
                            ip_addresses=[], default_routes=[], default_routes_v6=[], avahi_service='unknown',
+                           ssh_socket_state='unknown', ssh_service_state='unknown',
+                           ssh_host_keys_present='unknown', ssh_config_validation='unknown',
+                           ssh_banner_state='unknown', ssh_failure_category='unknown',
                            hardware=[], firmware_events=[])
 
     def input(self, data):
@@ -229,6 +304,12 @@ class Report:
         self.fields['hardware'] = hardware()
         code, text = query(['dmesg', '--color=never'])
         self.fields['firmware_events'] = firmware_events(text) if code == 0 else ['kernel-log-unavailable']
+        # Separate small budget so existing Wi-Fi probes retain their full budget.
+        ssh_deadline = time.monotonic() + 4
+        def ssh_query(args):
+            remaining = ssh_deadline - time.monotonic()
+            return probe(args, timeout=min(0.5, remaining)) if remaining > 0 else (127, '')
+        self.fields.update(ssh_diagnostics(ssh_query))
 
 
 def finalize(source):

@@ -80,6 +80,7 @@ class ImportTests(unittest.TestCase):
         self.calls = []
         self.available = mock.patch.object(wifi, 'wifi_available', return_value=True).start()
         mock.patch('wifi_diagnostics.probe', return_value=(127, '')).start()
+        mock.patch('wifi_diagnostics.ssh_banner', return_value='unavailable').start()
         self.addCleanup(mock.patch.stopall)
 
     def run_import(self, reject=None, change_source=False):
@@ -183,6 +184,7 @@ class DiagnosticTests(unittest.TestCase):
         self.diag = sys.modules['wifi_diagnostics']
         mock.patch.object(wifi, 'wifi_available', return_value=True).start()
         mock.patch.object(self.diag, 'probe', return_value=(127, '')).start()
+        mock.patch.object(self.diag, 'ssh_banner', return_value='unavailable').start()
         mock.patch.object(self.diag, 'hardware', return_value=[]).start()
         self.addCleanup(mock.patch.stopall)
 

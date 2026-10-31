@@ -89,6 +89,61 @@ us. Interactive systemd-firstboot questions are suppressed through the UKI's
 
 No desktop, X11, Wayland, PulseAudio, PipeWire or Docker is installed.
 
+### SSH startup and diagnosis
+
+The Randy preset enables `ssh.service` and disables `ssh.socket`; the daemon
+normally owns TCP port 22. The packaged Debian `sshd-keygen.service` is also
+installed/enabled by the current build and is ordered before `ssh.service`, but
+is conditioned on `ConditionFirstBoot=yes`. The built generic image has
+`/etc/machine-id` set to `uninitialized`, as checked in CI. An empty machine-id
+has different first-boot semantics, and a previously booted filesystem already
+has an initialized identity, so key recovery must not depend on that condition.
+
+The existing Randy `ssh.service.d/10-host-keys.conf` independently runs
+`ssh-keygen -A` before `sshd -t` on every service start. This generates missing
+default host keys on the actual device's writable ext4 `/etc/ssh`, leaves
+existing keys alone, and fails startup if validation fails. No private host key
+is distributed, no interactive firstboot is involved, and no password is added.
+The native key-generation service can run too; neither invocation replaces
+existing keys. Do not clone an already booted installation for distribution.
+
+An open TCP port alone does not prove SSH works. The VM reporter now runs
+`sshd -t`, checks effective key-only settings with `sshd -T`, verifies rerunning
+`ssh-keygen -A` preserves the host keys, and requires an `SSH-2.0-OpenSSH_...`
+server banner from a real local TCP connection. Image inspection also verifies
+the socket is disabled, the generation/validation drop-in is installed in order,
+and the `sshd-session` executable is present.
+
+CONFIG diagnostics include `ssh_socket_state`, `ssh_service_state`,
+`ssh_host_keys_present` (presence from metadata, not key validation),
+`ssh_config_validation`, `ssh_banner_state`, and `ssh_failure_category`.
+These are a snapshot taken while collecting the existing Wi-Fi report; SSH may
+still be activating. The local banner probe has a one-second deadline and SSH
+queries have a separate four-second budget, preserving the existing eight-second
+Wi-Fi query budget. These checks do not generate keys, restart SSH or change
+Wi-Fi provisioning. If no CONFIG report existed after an importer failure, the
+existing finalizer collects the same SSH section.
+
+The category is a fixed label: `ok`, `missing-host-keys`, `invalid-config`,
+`service-start-failed`, `socket-only`, or `unknown`. When a local banner is
+unavailable, recognized recent journal messages can additionally produce
+`session-exec-failed`, `privilege-separation-failed`, `crypto-version-mismatch`,
+or `connection-rate-limited`. Journal text is used only for classification;
+neither raw logs, raw banners, configuration, authorized keys, private keys nor
+fingerprints are copied to CONFIG. A historical journal message is supporting
+evidence, not proof of the current cause. Unknown remains unknown.
+
+The hardware report from 2026-10-31 confirms working Wi-Fi but predates these SSH
+fields. A read-only TCP probe reproduced immediate EOF before any server banner.
+That alone cannot identify its cause or establish the listener's owner. Existing
+[CI boot evidence](https://github.com/PapaSimons/Randy-OS/actions/runs/41160727480)
+shows native key generation completing and sshd binding both IPv4 and IPv6 port
+22; the [preceding build](https://github.com/PapaSimons/Randy-OS/actions/runs/41159842873)
+also verifies no baked-in host keys and an uninitialized machine-id. Those facts
+do not establish the hardware's connection-time failure. With no hardware
+console shell, inspect the new CONFIG SSH fields after the next diagnostic boot
+before selecting a cause-specific fix.
+
 ## Build from macOS using GitHub Actions
 
 No native macOS mkosi installation is needed. Intended flow:
