@@ -26,7 +26,7 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y python3-venv apt debian-archive-keyring \
             bubblewrap systemd-container systemd-repart uidmap \
-            util-linux fdisk e2fsprogs dosfstools xz-utils zstd curl gpg python3-gi gir1.2-nm-1.0
+            util-linux fdisk e2fsprogs dosfstools binutils xz-utils zstd curl gpg python3-gi gir1.2-nm-1.0
           # Noble's Debian keyring can predate the Trixie signing keys.
           for key in archive-key-13 archive-key-13-security release-13; do
             curl --fail --silent --show-error --location --retry 3 \

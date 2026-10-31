@@ -48,6 +48,44 @@ class ImageValidationTests(unittest.TestCase):
         settings = dict(item.split('=', 1) for item in shlex.split(config['Build']['Environment']))
         self.assertEqual(settings['SYSTEMD_REPART_MKFS_OPTIONS_VFAT'], '-S 512')
 
+    def test_unattended_firstboot_defaults_preserve_locked_root(self):
+        config = configparser.ConfigParser(interpolation=None)
+        config.read(ROOT / 'mkosi.conf')
+        content = config['Content']
+        self.assertEqual(shlex.split(content['KernelCommandLine']), ['systemd.firstboot=no'])
+        for key, value in [('Hostname', 'randy'), ('Locale', 'C.UTF-8'),
+                           ('Keymap', 'us'), ('Timezone', 'UTC'),
+                           ('RootPassword', 'hashed:!'), ('Autologin', 'no')]:
+            self.assertEqual(content[key], value)
+        self.assertEqual((ROOT / 'mkosi.extra/etc/hostname').read_text().strip(), 'randy')
+        self.assertNotIn('/etc/localtime', content['RemoveFiles'].split())
+        self.assertNotIn('/etc/timezone', content['RemoveFiles'].split())
+
+    def test_custom_units_do_not_invoke_firstboot(self):
+        for path in (ROOT / 'mkosi.extra').rglob('*'):
+            if path.is_file() and ('systemd/system' in path.as_posix()):
+                active = '\n'.join(line for line in path.read_text().splitlines()
+                                   if not line.lstrip().startswith(('#', ';')))
+                self.assertNotIn('systemd-firstboot', active, str(path))
+
+    def test_embedded_command_line_requires_exact_flag_without_global_override(self):
+        with tempfile.TemporaryDirectory() as work:
+            path = Path(work) / 'cmdline'
+            for cmdline, valid in [
+                ('root=PARTUUID=test systemd.firstboot=no rw\0', True),
+                ('root=PARTUUID=test rw', False),
+                ('systemd.firstboot=nope', False),
+                ('systemd.firstboot=no systemd.firstboot=yes', False),
+                ('systemd.firstboot=no systemd.condition_first_boot=no', False),
+            ]:
+                with self.subTest(cmdline=cmdline):
+                    path.write_bytes(cmdline.encode())
+                    result = self.call('validate_kernel_command_line', str(path))
+                    if valid:
+                        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                    else:
+                        self.assert_diagnostic(result, 'UKI firstboot command line')
+
     def test_both_fat_partitions_are_checked_in_the_image_validator(self):
         text = SCRIPT.read_text()
         self.assertIn('validate_fat_sector_size "${loop}p1" EFI', text)

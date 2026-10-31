@@ -88,6 +88,22 @@ print('[OK] FAT logical sector size is 512', flush=True)
 PYFAT
 }
 
+validate_kernel_command_line() {
+    run 'UKI embedded kernel command line disables interactive firstboot only' python3 - "$1" <<'PYCMDLINE'
+import pathlib
+import shlex
+import sys
+
+tokens = shlex.split(pathlib.Path(sys.argv[1]).read_bytes().rstrip(b'\0').decode())
+firstboot = [token for token in tokens if token.split('=', 1)[0] == 'systemd.firstboot']
+forced = [token for token in tokens if token.split('=', 1)[0] == 'systemd.condition_first_boot']
+print(f'Expected: systemd.firstboot=no and no global first-boot override\nActual: {tokens!r}')
+if firstboot != ['systemd.firstboot=no'] or forced:
+    print('ERROR: UKI firstboot command line does not match', file=sys.stderr)
+    sys.exit(1)
+PYCMDLINE
+}
+
 validate_partitions() {
     run 'GPT partition table: scheme, sector units, count, order, GUIDs, labels and exact sizes' \
         python3 - "$1" <<'PY'
@@ -181,9 +197,9 @@ main() {
         step=arguments
         fail 'validate-image.sh IMAGE.raw' "$# arguments supplied"
     fi
-    local image=$1 tool device root packages machine_id
+    local image=$1 tool device root packages machine_id uki
     for tool in uname id sfdisk python3 losetup udevadm lsblk blkid mount umount mountpoint \
-                find systemctl systemd-analyze dpkg-query readlink ls cat mktemp mkdir rm; do
+                find systemctl systemd-analyze dpkg-query readlink ls cat mktemp mkdir rm objcopy; do
         capture "Required host command: $tool" command -v "$tool"
     done
     capture 'Linux host kernel (x86_64 guest is checked through its GPT root type)' uname -s
@@ -240,6 +256,13 @@ main() {
     step='UKI existence'
     if [[ -z "$command_output" ]]; then fail 'one or more EFI/Linux/*.efi files' '<none>'; fi
     printf '[OK] UKIs: %s\n' "$command_output"
+    for uki in "$work/esp/EFI/Linux/"*.efi; do
+        run "Extract embedded .cmdline from $uki" \
+            objcopy --dump-section ".cmdline=$work/uki.cmdline" "$uki" "$work/uki-copy.efi"
+        check_file 'Extracted UKI command line is nonempty' "$work/uki.cmdline" -s
+        validate_kernel_command_line "$work/uki.cmdline"
+        run 'Remove temporary UKI extraction files' rm "$work/uki.cmdline" "$work/uki-copy.efi"
+    done
     for tool in NetworkManager avahi-daemon sshd; do
         check_file "$tool executable in guest" "$root/usr/sbin/$tool" -x
     done
@@ -269,6 +292,10 @@ main() {
     check_file 'Wi-Fi diagnostic helper is installed' "$root/usr/lib/randy/wifi_diagnostics.py" -f
     check_file 'Wi-Fi importer is installed' "$root/usr/lib/randy/wifi-import.py" -f
     check_file 'Wi-Fi import service is installed' "$root/etc/systemd/system/randy-wifi-import.service" -f
+    capture 'Wi-Fi diagnostics finalizer remains configured' \
+        python3 -c 'import configparser, sys; c = configparser.ConfigParser(interpolation=None); c.read(sys.argv[1]); print(c["Service"]["ExecStopPost"])' \
+        "$root/etc/systemd/system/randy-wifi-import.service"
+    equal 'Wi-Fi diagnostics finalizer' '/usr/bin/python3 /usr/lib/randy/wifi_diagnostics.py' "$command_output"
     check_file 'Optional CONFIG mount unit is installed' "$root/etc/systemd/system/"'run-randy\x2dconfig.mount' -f
     run 'Verify installed systemd units and referenced executables against guest root' \
         systemd-analyze --root="$root" verify /etc/systemd/system/randy-wifi-import.service \
