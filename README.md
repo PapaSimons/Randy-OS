@@ -156,7 +156,9 @@ After reviewing and committing these files yourself, push the repository to
 GitHub. Every push and pull request runs the workflow. Alternatively open
 **Actions → Build Alpha 1 image → Run workflow**. Push/PR runs use **smoke** mode:
 build, static validation and VM boot validation, without image compression/upload.
-For a downloadable image, select **mode: image** on a manual run. Select
+Manual runs default to **mode: image**, which uploads a flashable image after
+the VM smoke test passes. Select **mode: smoke** for build/test and logs only.
+The Actions run title and job summary show the selected mode and profile. Select
 **profile: normal** (default) or explicitly select **debug**. A manual run can optionally
 accept a test SSH public key; automated push/PR builds contain no login key.
 
@@ -175,6 +177,7 @@ artifact bundle named `randy-os-alpha1-x86_64` containing:
 
 ```text
 randy-os-alpha1-x86_64.raw.xz
+randy-os-alpha1-x86_64.raw.xz.sha256
 SHA256SUMS
 randy-os-alpha1-x86_64.manifest
 ```

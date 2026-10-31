@@ -1,4 +1,5 @@
 name: Build Alpha 1 image
+run-name: Alpha 1 · ${{ inputs.mode || 'smoke' }} · ${{ inputs.profile || 'normal' }} · ${{ github.event_name }}
 
 on:
   push:
@@ -6,10 +7,11 @@ on:
   workflow_dispatch:
     inputs:
       mode:
-        description: 'smoke: build/test only; image: also compress and upload'
+        description: 'Build mode (image includes a flashable artifact; smoke uploads logs only)'
+        required: true
         type: choice
-        options: [smoke, image]
-        default: smoke
+        options: [image, smoke]
+        default: image
       profile:
         description: 'normal or explicitly insecure local-console debug image'
         type: choice
@@ -29,17 +31,20 @@ jobs:
     timeout-minutes: 75
     env:
       MKOSI_VERSION: '27.1'
+      BUILD_MODE: ${{ inputs.mode || 'smoke' }}
     steps:
       - uses: actions/checkout@v4
       - name: Select image configuration
         env:
           PROFILE: ${{ inputs.profile || 'normal' }}
         run: |
+          case "$BUILD_MODE" in image|smoke) ;; *) exit 2 ;; esac
           case "$PROFILE" in
             normal) echo 'IMAGE_NAME=randy-os-alpha1-x86_64' >> "$GITHUB_ENV" ;;
             debug) echo 'IMAGE_NAME=randy-os-alpha1-debug-x86_64' >> "$GITHUB_ENV" ;;
             *) exit 2 ;;
           esac
+          printf '### Alpha 1 build\n\nMode: **%s**\n\nProfile: **%s**\n' "$BUILD_MODE" "$PROFILE" >> "$GITHUB_STEP_SUMMARY"
       - name: Restore pinned package downloads
         id: packages
         uses: actions/cache/restore@v4
@@ -123,19 +128,24 @@ jobs:
           path: image-validation.log
           if-no-files-found: error
       - name: Compress image and checksum
-        if: ${{ success() && inputs.mode == 'image' }}
+        if: ${{ success() && env.BUILD_MODE == 'image' && steps.vm.outcome == 'success' }}
         working-directory: mkosi.output
         run: |
           sudo chown -R "$(id -u):$(id -g)" .
           xz -T2 -6 "$IMAGE_NAME.raw"
-          sha256sum "$IMAGE_NAME.raw.xz" > SHA256SUMS
-      - uses: actions/upload-artifact@v4
-        if: ${{ success() && inputs.mode == 'image' }}
+          test -s "$IMAGE_NAME.raw.xz"
+          sha256sum "$IMAGE_NAME.raw.xz" > "$IMAGE_NAME.raw.xz.sha256"
+          sha256sum --check "$IMAGE_NAME.raw.xz.sha256"
+          # Preserve compatibility with the existing flashing instructions.
+          cp "$IMAGE_NAME.raw.xz.sha256" SHA256SUMS
+      - name: Upload flashable OS image
+        if: ${{ success() && env.BUILD_MODE == 'image' && steps.vm.outcome == 'success' }}
         with:
           name: ${{ env.IMAGE_NAME }}
           compression-level: 0
           if-no-files-found: error
           path: |
             mkosi.output/${{ env.IMAGE_NAME }}.raw.xz
+            mkosi.output/${{ env.IMAGE_NAME }}.raw.xz.sha256
             mkosi.output/SHA256SUMS
             mkosi.output/*.manifest
