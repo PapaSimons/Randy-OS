@@ -83,8 +83,9 @@ injected public key; there is no default password or autologin.
 Machine ID is left uninitialized by mkosi and generated on first boot. SSH host
 keys are removed from the image and generated before sshd starts. Journald uses
 normal Debian/systemd behavior; `systemd-timesyncd` enables automatic network
-time synchronization. No timezone is selected: the OS falls back to UTC until
-configured, for example with `timedatectl set-timezone YOUR/ZONE`.
+time synchronization. The image explicitly uses UTC, locale C.UTF-8 and keymap
+us. Interactive systemd-firstboot questions are suppressed through the UKI's
+`systemd.firstboot=no`; normal systemd first-boot semantics remain enabled.
 
 No desktop, X11, Wayland, PulseAudio, PipeWire or Docker is installed.
 
@@ -98,7 +99,10 @@ Mac → git push → GitHub Actions Ubuntu Linux → mkosi → downloadable imag
 
 After reviewing and committing these files yourself, push the repository to
 GitHub. Every push and pull request runs the workflow. Alternatively open
-**Actions → Build Alpha 1 image → Run workflow**. A manual run can optionally
+**Actions → Build Alpha 1 image → Run workflow**. Push/PR runs use **smoke** mode:
+build, static validation and VM boot validation, without image compression/upload.
+For a downloadable image, select **mode: image** on a manual run. Select
+**profile: normal** (default) or explicitly select **debug**. A manual run can optionally
 accept a test SSH public key; automated push/PR builds contain no login key.
 
 CI installs the Python/build dependencies and the official Debian Trixie archive
@@ -108,7 +112,9 @@ and `mkosi build`, and inspects the resulting uncompressed image. Hardware-free
 unit checks validate parsing, failure/success behavior and keyfile compatibility
 with libnm. The image check verifies CONFIG is empty and has the right label,
 and verifies the installed import service/mount with systemd-analyze. No Wi-Fi
-credential input, environment variable or secret is used by GitHub Actions. It then
+credential input, environment variable or secret is used by GitHub Actions. After
+static inspection, CI boots a disposable image copy in QEMU with OVMF UEFI and
+TCG software virtualization; KVM is not required. Only **image** mode then
 compresses with xz, computes SHA-256 over the compressed image, and uploads one
 artifact bundle named `randy-os-alpha1-x86_64` containing:
 
@@ -121,6 +127,105 @@ randy-os-alpha1-x86_64.manifest
 The manifest records installed packages. The checksum detects corruption; it is
 not a signature. The workflow has read-only repository permissions and does not
 publish a release or deploy anything.
+
+## Debug images and quick boot checks
+
+On a Linux x86_64 development machine with mkosi v27.1 and its build dependencies:
+
+```sh
+# Normal image: locked root, no autologin, existing release configuration.
+sudo mkosi summary
+sudo mkosi build
+
+# Explicit opt-in: local console root autologin and verbose boot messages.
+sudo mkosi --profile=debug summary
+sudo mkosi --profile=debug build
+```
+
+The debug output is `mkosi.output/randy-os-alpha1-debug-x86_64.raw`. Both the tty
+login banner and MOTD say DEBUG. mkosi's supported `Autologin=yes` enables root
+autologin on tty1 (also hvc0/container consoles); the root password stays locked
+and SSH authentication settings stay unchanged. Physical console access grants
+root access in this development image. It retains hostname `randy` and existing
+Alpha diagnostic tooling. Use `nmcli`, `journalctl -b` and `dmesg` even when Wi-Fi
+is broken. No debug profile is selected by the normal build.
+
+To test either image locally on Linux, install `qemu-system-x86`, `ovmf`,
+`binutils` and the existing image-inspection dependencies, then run:
+
+```sh
+sudo scripts/validate-image.sh mkosi.output/randy-os-alpha1-x86_64.raw
+sudo scripts/vm-smoke.sh mkosi.output/randy-os-alpha1-x86_64.raw
+```
+
+Substitute the debug filename when testing debug. The smoke harness makes a
+sparse/reflink temporary copy, adds a test-only systemd timer/service, and appends
+serial console logging to the copy's unsigned UKIs. It preserves all original
+kernel arguments, including the firstboot setting; it never repairs that flag.
+The original build output, partitions, machine-id and CONFIG contents are untouched.
+This tests the built OS with reporting instrumentation, not an untouched image
+byte for byte. Allow disk space for another sparse image and 2 GiB guest RAM.
+
+The guest must boot through UEFI, retain `systemd.firstboot=no`, reach
+`multi-user.target`, report hostname `randy`, and have NetworkManager,
+avahi-daemon and ssh services active. The Wi-Fi importer must be enabled and
+complete successfully with empty CONFIG and no Wi-Fi device. No failed units
+are allowed. When installed in a future image, `lms`, `logitechmediaserver`,
+`lyrionmusicserver`, `slimserver`, `squeezelite` and `randy` service units must be
+active; Alpha 1 installs none of these. There is no audio or Wi-Fi association test.
+
+A timer requests the reporter after 15 seconds; the reporter waits for
+`multi-user.target`. Interactive firstboot blocking therefore prevents a pass
+and times out. The guest also checks firstboot is inactive. The host enforces
+a **600-second QEMU timeout**, followed by at most 10 seconds before killing
+QEMU. The workflow VM step has a 12-minute outer limit for preparation/cleanup.
+Success requires a clean QEMU exit and an explicit guest pass marker.
+
+`vm-smoke-logs/` contains raw `serial.log`, normalized `console.log`, `qemu.log`
+and `host.log` (logs available before a preparation failure are retained too).
+Guest assertion failures print failed units, pending jobs and the last 400
+journal entries before powering off. A blocked boot is terminated by the host;
+its available serial output remains. CI uploads VM logs on success or failure
+as `<image-name>-vm-smoke-logs`, plus the static inspection log as
+`randy-os-alpha1-validation-log`. A failed VM gate prevents compression/checksum
+and image upload. No image upload is needed to inspect a smoke failure.
+
+For everyday changes, use push/PR smoke results first. Request an **image** build
+only for a hardware check, using **debug** when local console troubleshooting is
+needed. Local Linux builds can run the same two validation commands without a
+GitHub round trip. A successful VM boot does not establish physical Wi-Fi/audio
+support or successful boot on a NUC; those still require hardware testing.
+
+## Build caching
+
+CI persists only mkosi's package-download cache (`mkosi.pkgcache/`) using
+`actions/cache`, keyed by runner OS/architecture, mkosi v27.1 and the complete
+normal/debug mkosi configuration (including both pinned Debian snapshots).
+There are no broad restore fallbacks. Package signature/hash verification stays
+enabled. Cache contents exclude guest filesystems, generated images, local SSH
+overlays, credentials and diagnostics. Package cache ownership is restored to
+the runner after the privileged build so Actions can save it. Downloads are saved
+before boot validation, so a later VM failure does not discard a successful
+build's download cache. The cache starts
+empty on a miss; ephemeral runners reuse it only through Actions restore/save.
+
+This can avoid downloading unchanged Debian packages for the OS, initrd and
+tools tree. It does not avoid unpacking packages, UKI/repart work or installing
+host dependencies. Cache transfer also takes time; no measured speedup is claimed.
+Snapshot/package/toolchain changes intentionally use a fresh cache. GitHub cache
+scope/eviction rules still apply, and a cache saved by a PR may not be reusable
+on the default branch.
+
+[mkosi v27.1 caching](https://github.com/systemd/mkosi/blob/v27.1/mkosi/resources/man/mkosi.1.md#caching)
+also supports `Incremental=yes`: it skips package installation using a cached
+filesystem, which can materially help repeated local builds with stable package
+lists. It is deliberately **not enabled in CI**: safe persistence would need
+complete invalidation of prepare/skeleton inputs, configuration, snapshots,
+toolchain, profiles and any local overlays, plus enough storage and transfer time
+to justify caching a filesystem tree. A persistent Linux developer machine can
+opt in with `sudo mkosi --incremental=yes --cache-directory=mkosi.cache build`;
+use `sudo mkosi -f clean` when cached inputs change, and run a clean normal build
+before distributing an image. There are no Squeezelite build inputs in Alpha 1.
 
 ## Inject a test SSH public key
 

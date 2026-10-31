@@ -1,0 +1,4 @@
+RANDY ALPHA 1 DEBUG — console root autologin enabled
+Diagnostics: nmcli general status; nmcli device; journalctl -b; dmesg
+CONFIG diagnostics: /run/randy-config/randy-diagnostics.txt (when mounted)
+

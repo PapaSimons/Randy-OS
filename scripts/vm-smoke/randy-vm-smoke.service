@@ -1,0 +1,8 @@
+[Unit]
+Description=Report disposable Randy VM smoke test results
+After=multi-user.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/lib/randy-vm-smoke-check
+TimeoutStartSec=60

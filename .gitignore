@@ -2,6 +2,8 @@
 /mkosi.cache/
 /mkosi.builddir/
 /mkosi.workspace/
+/mkosi.pkgcache/
+/vm-smoke-logs/
 /mkosi.tools/
 /mkosi.local.conf
 /mkosi.local/

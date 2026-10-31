@@ -5,6 +5,16 @@ on:
   pull_request:
   workflow_dispatch:
     inputs:
+      mode:
+        description: 'smoke: build/test only; image: also compress and upload'
+        type: choice
+        options: [smoke, image]
+        default: smoke
+      profile:
+        description: 'normal or explicitly insecure local-console debug image'
+        type: choice
+        options: [normal, debug]
+        default: normal
       ssh_public_key:
         description: 'Optional single-line SSH public key for root Alpha access (never a private key)'
         required: false
@@ -16,17 +26,33 @@ permissions:
 jobs:
   build:
     runs-on: ubuntu-24.04
-    timeout-minutes: 60
+    timeout-minutes: 75
     env:
       MKOSI_VERSION: '27.1'
     steps:
       - uses: actions/checkout@v4
+      - name: Select image configuration
+        env:
+          PROFILE: ${{ inputs.profile || 'normal' }}
+        run: |
+          case "$PROFILE" in
+            normal) echo 'IMAGE_NAME=randy-os-alpha1-x86_64' >> "$GITHUB_ENV" ;;
+            debug) echo 'IMAGE_NAME=randy-os-alpha1-debug-x86_64' >> "$GITHUB_ENV" ;;
+            *) exit 2 ;;
+          esac
+      - name: Restore pinned package downloads
+        id: packages
+        uses: actions/cache/restore@v4
+        with:
+          path: mkosi.pkgcache
+          key: mkosi-packages-${{ runner.os }}-${{ runner.arch }}-${{ env.MKOSI_VERSION }}-${{ hashFiles('mkosi.conf', 'mkosi.profiles/**/mkosi.conf') }}
       - name: Install Linux build dependencies
         run: |
           sudo apt-get update
           sudo apt-get install -y python3-venv apt debian-archive-keyring \
             bubblewrap systemd-container systemd-repart uidmap \
-            util-linux fdisk e2fsprogs dosfstools binutils xz-utils zstd curl gpg python3-gi gir1.2-nm-1.0
+            util-linux fdisk e2fsprogs dosfstools binutils xz-utils zstd curl gpg python3-gi gir1.2-nm-1.0 \
+            qemu-system-x86 ovmf
           # Noble's Debian keyring can predate the Trixie signing keys.
           for key in archive-key-13 archive-key-13-security release-13; do
             curl --fail --silent --show-error --location --retry 3 \
@@ -38,7 +64,7 @@ jobs:
           /tmp/mkosi-venv/bin/mkosi --version
       - name: Run provisioning checks including NetworkManager keyfile compatibility
         run: |
-          bash -n scripts/configure-wifi-macos.sh scripts/validate-image.sh
+          for script in scripts/*.sh scripts/vm-smoke/check.sh; do bash -n "$script"; done
           /usr/bin/python3 -c 'import gi; gi.require_version("NM", "1.0"); from gi.repository import NM'
           /usr/bin/python3 -m unittest discover -s tests -v
       - name: Prepare optional Alpha public key overlay
@@ -53,15 +79,42 @@ jobs:
             printf '[Content]\nExtraTrees=.alpha-ssh\n' > mkosi.local.conf
           fi
       - name: Build raw disk image
+        id: build_image
+        env:
+          PROFILE: ${{ inputs.profile || 'normal' }}
         run: |
-          sudo /tmp/mkosi-venv/bin/mkosi summary
-          sudo /tmp/mkosi-venv/bin/mkosi build
+          mkdir -p mkosi.pkgcache
+          args=(--package-cache-dir=mkosi.pkgcache)
+          if [[ "$PROFILE" == debug ]]; then args+=(--profile=debug); fi
+          sudo /tmp/mkosi-venv/bin/mkosi "${args[@]}" summary
+          sudo /tmp/mkosi-venv/bin/mkosi "${args[@]}" build
+      - name: Make package cache accessible to Actions
+        if: always()
+        run: |
+          if [[ -d mkosi.pkgcache ]]; then sudo chown -R "$(id -u):$(id -g)" mkosi.pkgcache; fi
+      - name: Save package downloads before boot validation
+        if: ${{ success() && steps.packages.outputs.cache-hit != 'true' }}
+        uses: actions/cache/save@v4
+        with:
+          path: mkosi.pkgcache
+          key: ${{ steps.packages.outputs.cache-primary-key }}
       - name: Inspect image with diagnostics
         id: validate
         shell: bash
         run: |
           set -o pipefail
-          sudo scripts/validate-image.sh mkosi.output/randy-os-alpha1-x86_64.raw 2>&1 | tee image-validation.log
+          sudo scripts/validate-image.sh "mkosi.output/$IMAGE_NAME.raw" 2>&1 | tee image-validation.log
+      - name: Boot UEFI image in QEMU software virtualization
+        id: vm
+        timeout-minutes: 12
+        run: sudo scripts/vm-smoke.sh "mkosi.output/$IMAGE_NAME.raw"
+      - name: Upload VM serial and host logs
+        if: ${{ always() && steps.vm.outcome != 'skipped' && steps.vm.outcome != '' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.IMAGE_NAME }}-vm-smoke-logs
+          path: vm-smoke-logs/
+          if-no-files-found: warn
       - name: Upload image validation log
         if: ${{ always() && (steps.validate.outcome == 'success' || steps.validate.outcome == 'failure') }}
         uses: actions/upload-artifact@v4
@@ -70,17 +123,19 @@ jobs:
           path: image-validation.log
           if-no-files-found: error
       - name: Compress image and checksum
+        if: ${{ success() && inputs.mode == 'image' }}
         working-directory: mkosi.output
         run: |
           sudo chown -R "$(id -u):$(id -g)" .
-          xz -T2 -6 randy-os-alpha1-x86_64.raw
-          sha256sum randy-os-alpha1-x86_64.raw.xz > SHA256SUMS
+          xz -T2 -6 "$IMAGE_NAME.raw"
+          sha256sum "$IMAGE_NAME.raw.xz" > SHA256SUMS
       - uses: actions/upload-artifact@v4
+        if: ${{ success() && inputs.mode == 'image' }}
         with:
-          name: randy-os-alpha1-x86_64
+          name: ${{ env.IMAGE_NAME }}
           compression-level: 0
           if-no-files-found: error
           path: |
-            mkosi.output/randy-os-alpha1-x86_64.raw.xz
+            mkosi.output/${{ env.IMAGE_NAME }}.raw.xz
             mkosi.output/SHA256SUMS
             mkosi.output/*.manifest
