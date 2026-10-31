@@ -140,6 +140,7 @@ jobs:
           cp "$IMAGE_NAME.raw.xz.sha256" SHA256SUMS
       - name: Upload flashable OS image
         if: ${{ success() && env.BUILD_MODE == 'image' && steps.vm.outcome == 'success' }}
+        uses: actions/upload-artifact@v4
         with:
           name: ${{ env.IMAGE_NAME }}
           compression-level: 0
